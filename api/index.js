@@ -57,12 +57,12 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Обработчик потоков
 builder.defineStreamHandler(async ({ type, id, config }) => {
     try {
-        console.log(`Запрос потока: ${type} - ${id}`);
+        // ВСТАВЬ СВОЙ КЛЮЧ НИЖЕ В КАВЫЧКИ
+        const myStaticKey = 'ТВОЙ_API_КЛЮЧ_ОТ_REAL_DEBRID'; 
         
-      const rdApiKey = 'F5PIY56JKZUQWSPWUEMJZBIJKYRXYRWRNVFI2Z6AKBRCDF7N7AYQ';
+        console.log(`Запрос потока: ${type} - ${id}`);
         
         const imdbId = id.split(':')[0];
         let season = null;
@@ -75,78 +75,46 @@ builder.defineStreamHandler(async ({ type, id, config }) => {
         }
         
         // Проверка кэша
-        const cacheKey = `streams:${id}:${config.rdApiKey.substring(0, 8)}`;
+        const cacheKey = `streams:${id}:${myStaticKey.substring(0, 8)}`;
         const cached = getCache(cacheKey);
-        if (cached) {
-            console.log('Возврат из кэша');
-            return { streams: cached };
-        }
+        if (cached) return { streams: cached };
         
-        const rdClient = new RealDebridClient(config.rdApiKey);
+        // Используем твой ключ напрямую
+        const rdClient = new RealDebridClient(myStaticKey);
         
-        // Инициализация поисковика
         const jackettSearcher = new JackettSearcher(
             process.env.JACKETT_URL,
             process.env.JACKETT_API_KEY
         );
         
         const directSearcher = new TorrentSearcher();
-        
-        // Получение метаданных
         const metadata = await getMetadata(imdbId, type, season, episode);
         
-        // Поиск торрентов
         let torrents = [];
-        
         if (jackettSearcher.enabled) {
-            console.log('Поиск через Jackett...');
             torrents = await jackettSearcher.search({
-                type,
-                imdbId,
-                title: metadata.title,
-                year: metadata.year,
-                season,
-                episode
+                type, imdbId, title: metadata.title, year: metadata.year, season, episode
             });
         }
         
         if (torrents.length === 0) {
-            console.log('Поиск через прямой парсинг...');
             torrents = await directSearcher.search({
-                type,
-                imdbId,
-                title: metadata.title,
-                year: metadata.year,
-                season,
-                episode
+                type, imdbId, title: metadata.title, year: metadata.year, season, episode
             });
         }
         
-        console.log(`Найдено торрентов: ${torrents.length}`);
-        
         const streams = [];
-        
         for (const torrent of torrents.slice(0, 15)) {
             try {
                 const rdInfo = await rdClient.checkAvailability(torrent.infoHash);
-                
                 if (rdInfo && rdInfo.available) {
-                    let fileIndex = null;
-                    
-                    if (type === 'series' && rdInfo.files) {
-                        fileIndex = findVideoFile(rdInfo.files, season, episode);
-                    }
+                    let fileIndex = (type === 'series' && rdInfo.files) ? findVideoFile(rdInfo.files, season, episode) : null;
                     
                     streams.push({
                         name: `RD 🇷🇺 ${torrent.source}`,
                         title: torrent.title,
                         infoHash: torrent.infoHash,
                         fileIdx: fileIndex,
-                        behaviorHints: {
-                            bingeGroup: `realdebrid-${torrent.infoHash}`,
-                            notWebReady: true
-                        },
-                        sources: torrent.seeders ? [`👥 ${torrent.seeders}`] : [],
                         description: [
                             torrent.size ? `📦 ${torrent.size}` : null,
                             torrent.quality ? `🎬 ${torrent.quality}` : null,
@@ -154,27 +122,14 @@ builder.defineStreamHandler(async ({ type, id, config }) => {
                         ].filter(Boolean).join(' | ')
                     });
                 }
-            } catch (err) {
-                console.error('Ошибка обработки торрента:', err.message);
-            }
+            } catch (err) { console.error(err.message); }
         }
         
-        if (streams.length > 0) {
-            setCache(cacheKey, streams);
-        }
-        
-        console.log(`Возвращено потоков: ${streams.length}`);
+        if (streams.length > 0) setCache(cacheKey, streams);
         return { streams };
         
     } catch (error) {
-        console.error('Ошибка в обработчике потоков:', error);
-        return {
-            streams: [{
-                name: '❌ Ошибка',
-                description: error.message,
-                notFound: true
-            }]
-        };
+        return { streams: [{ name: '❌ Ошибка', description: error.message, notFound: true }] };
     }
 });
 
