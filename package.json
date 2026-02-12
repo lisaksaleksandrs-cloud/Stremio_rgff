@@ -1,0 +1,26 @@
+{
+  "name": "stremio-realdebrid-russian-addon",
+  "version": "1.0.0",
+  "description": "Stremio addon для работы с Real-Debrid и русскими торрент-трекерами",
+  "main": "api/index.js",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "keywords": ["stremio", "addon", "real-debrid", "russian", "torrents", "vercel"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "iconv-lite": "^0.6.3"
+  },
+  "devDependencies": {
+    "vercel": "^33.0.0"
+  }
+}
