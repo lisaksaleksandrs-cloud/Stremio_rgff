@@ -62,15 +62,7 @@ builder.defineStreamHandler(async ({ type, id, config }) => {
     try {
         console.log(`Запрос потока: ${type} - ${id}`);
         
-        if (!config || !config.rdApiKey) {
-            return {
-                streams: [{
-                    name: '⚠️ Требуется API ключ Real-Debrid',
-                    description: 'Настройте аддон и добавьте API ключ',
-                    notFound: true
-                }]
-            };
-        }
+      const rdApiKey = 'F5PIY56JKZUQWSPWUEMJZBIJKYRXYRWRNVFI2Z6AKBRCDF7N7AYQ';
         
         const imdbId = id.split(':')[0];
         let season = null;
