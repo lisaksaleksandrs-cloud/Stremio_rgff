@@ -26,7 +26,6 @@ function setCache(key, data) {
     });
 }
 
-// Манифест аддона
 const manifest = {
     id: 'community.realdebrid.russian',
     version: '1.0.0',
@@ -40,17 +39,10 @@ const manifest = {
     
     behaviorHints: {
         configurable: true,
-        configurationRequired: true
+        configurationRequired: false // ИЗМЕНИ НА FALSE ЗДЕСЬ
     },
     
-    config: [
-        {
-            key: 'rdApiKey',
-            type: 'text',
-            title: 'Real-Debrid API ключ',
-            required: true
-        }
-    ],
+    // config: [...] // МОЖЕШЬ ВООБЩЕ УДАЛИТЬ ИЛИ ЗАККОМЕНТИРОВАТЬ ЭТОТ БЛОК
     
     idPrefixes: ['tt', 'kitsu']
 };
