@@ -60,7 +60,7 @@ const builder = new addonBuilder(manifest);
 builder.defineStreamHandler(async ({ type, id, config }) => {
     try {
         // ВСТАВЬ СВОЙ КЛЮЧ НИЖЕ В КАВЫЧКИ
-        const myStaticKey = 'ТВОЙ_API_КЛЮЧ_ОТ_REAL_DEBRID'; 
+        const myStaticKey = 'F5PIY56JKZUQWSPWUEMJZBIJKYRXYRWRNVFI2Z6AKBRCDF7N7AYQ'; 
         
         console.log(`Запрос потока: ${type} - ${id}`);
         
