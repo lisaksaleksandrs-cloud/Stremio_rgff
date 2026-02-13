@@ -26,6 +26,7 @@ function setCache(key, data) {
     });
 }
 
+// Манифест аддона
 const manifest = {
     id: 'community.realdebrid.russian',
     version: '1.0.0',
@@ -39,22 +40,37 @@ const manifest = {
     
     behaviorHints: {
         configurable: true,
-        configurationRequired: false // ИЗМЕНИ НА FALSE ЗДЕСЬ
+        configurationRequired: true
     },
     
-    // config: [...] // МОЖЕШЬ ВООБЩЕ УДАЛИТЬ ИЛИ ЗАККОМЕНТИРОВАТЬ ЭТОТ БЛОК
+    config: [
+        {
+            key: 'rdApiKey',
+            type: 'text',
+            title: 'Real-Debrid API ключ',
+            required: true
+        }
+    ],
     
     idPrefixes: ['tt', 'kitsu']
 };
 
 const builder = new addonBuilder(manifest);
 
+// Обработчик потоков
 builder.defineStreamHandler(async ({ type, id, config }) => {
     try {
-        // ВСТАВЬ СВОЙ КЛЮЧ НИЖЕ В КАВЫЧКИ
-        const myStaticKey = 'F5PIY56JKZUQWSPWUEMJZBIJKYRXYRWRNVFI2Z6AKBRCDF7N7AYQ'; 
-        
         console.log(`Запрос потока: ${type} - ${id}`);
+        
+        if (!config || !config.rdApiKey) {
+            return {
+                streams: [{
+                    name: '⚠️ Требуется API ключ Real-Debrid',
+                    description: 'Настройте аддон и добавьте API ключ',
+                    notFound: true
+                }]
+            };
+        }
         
         const imdbId = id.split(':')[0];
         let season = null;
@@ -67,46 +83,78 @@ builder.defineStreamHandler(async ({ type, id, config }) => {
         }
         
         // Проверка кэша
-        const cacheKey = `streams:${id}:${myStaticKey.substring(0, 8)}`;
+        const cacheKey = `streams:${id}:${config.rdApiKey.substring(0, 8)}`;
         const cached = getCache(cacheKey);
-        if (cached) return { streams: cached };
+        if (cached) {
+            console.log('Возврат из кэша');
+            return { streams: cached };
+        }
         
-        // Используем твой ключ напрямую
-        const rdClient = new RealDebridClient(myStaticKey);
+        const rdClient = new RealDebridClient(config.rdApiKey);
         
+        // Инициализация поисковика
         const jackettSearcher = new JackettSearcher(
             process.env.JACKETT_URL,
             process.env.JACKETT_API_KEY
         );
         
         const directSearcher = new TorrentSearcher();
+        
+        // Получение метаданных
         const metadata = await getMetadata(imdbId, type, season, episode);
         
+        // Поиск торрентов
         let torrents = [];
+        
         if (jackettSearcher.enabled) {
+            console.log('Поиск через Jackett...');
             torrents = await jackettSearcher.search({
-                type, imdbId, title: metadata.title, year: metadata.year, season, episode
+                type,
+                imdbId,
+                title: metadata.title,
+                year: metadata.year,
+                season,
+                episode
             });
         }
         
         if (torrents.length === 0) {
+            console.log('Поиск через прямой парсинг...');
             torrents = await directSearcher.search({
-                type, imdbId, title: metadata.title, year: metadata.year, season, episode
+                type,
+                imdbId,
+                title: metadata.title,
+                year: metadata.year,
+                season,
+                episode
             });
         }
         
+        console.log(`Найдено торрентов: ${torrents.length}`);
+        
         const streams = [];
+        
         for (const torrent of torrents.slice(0, 15)) {
             try {
                 const rdInfo = await rdClient.checkAvailability(torrent.infoHash);
+                
                 if (rdInfo && rdInfo.available) {
-                    let fileIndex = (type === 'series' && rdInfo.files) ? findVideoFile(rdInfo.files, season, episode) : null;
+                    let fileIndex = null;
+                    
+                    if (type === 'series' && rdInfo.files) {
+                        fileIndex = findVideoFile(rdInfo.files, season, episode);
+                    }
                     
                     streams.push({
                         name: `RD 🇷🇺 ${torrent.source}`,
                         title: torrent.title,
                         infoHash: torrent.infoHash,
                         fileIdx: fileIndex,
+                        behaviorHints: {
+                            bingeGroup: `realdebrid-${torrent.infoHash}`,
+                            notWebReady: true
+                        },
+                        sources: torrent.seeders ? [`👥 ${torrent.seeders}`] : [],
                         description: [
                             torrent.size ? `📦 ${torrent.size}` : null,
                             torrent.quality ? `🎬 ${torrent.quality}` : null,
@@ -114,14 +162,27 @@ builder.defineStreamHandler(async ({ type, id, config }) => {
                         ].filter(Boolean).join(' | ')
                     });
                 }
-            } catch (err) { console.error(err.message); }
+            } catch (err) {
+                console.error('Ошибка обработки торрента:', err.message);
+            }
         }
         
-        if (streams.length > 0) setCache(cacheKey, streams);
+        if (streams.length > 0) {
+            setCache(cacheKey, streams);
+        }
+        
+        console.log(`Возвращено потоков: ${streams.length}`);
         return { streams };
         
     } catch (error) {
-        return { streams: [{ name: '❌ Ошибка', description: error.message, notFound: true }] };
+        console.error('Ошибка в обработчике потоков:', error);
+        return {
+            streams: [{
+                name: '❌ Ошибка',
+                description: error.message,
+                notFound: true
+            }]
+        };
     }
 });
 
@@ -195,43 +256,81 @@ module.exports = async (req, res) => {
     }
     
     const path = req.url || '/';
+    console.log('Request path:', path);
     
     try {
+        // Извлечение конфигурации из URL
+        // Поддерживаем форматы:
+        // /YOUR_API_KEY/manifest.json
+        // /YOUR_API_KEY/stream/movie/tt123.json
+        // /eyJyZEFwaUtleSI6Li4ufQ==/manifest.json (base64 config)
+        let userConfig = {};
+        const urlParts = path.split('/').filter(p => p);
+        
+        // Проверяем первую часть URL - это может быть конфигурация
+        if (urlParts.length > 0 && urlParts[0] !== 'manifest.json' && !urlParts[0].startsWith('stream')) {
+            const possibleConfig = urlParts[0];
+            
+            // Попытка декодировать как base64 конфиг
+            try {
+                const decoded = Buffer.from(possibleConfig, 'base64').toString();
+                userConfig = JSON.parse(decoded);
+                console.log('Decoded base64 config');
+            } catch (e) {
+                // Не base64 - это прямой API ключ
+                if (possibleConfig.length > 20) { // API ключи обычно длинные
+                    userConfig = { rdApiKey: possibleConfig };
+                    console.log('Direct API key detected');
+                }
+            }
+        }
+        
         // Обработка manifest
         if (path.includes('manifest.json')) {
             res.setHeader('Content-Type', 'application/json');
-            res.status(200).json(addonInterface.manifest);
+            
+            // Если есть конфигурация в URL, используем её для создания configured manifest
+            if (userConfig.rdApiKey) {
+                const configuredManifest = {
+                    ...addonInterface.manifest,
+                    behaviorHints: {
+                        ...addonInterface.manifest.behaviorHints,
+                        configurable: false,
+                        configurationRequired: false
+                    }
+                };
+                res.status(200).json(configuredManifest);
+            } else {
+                res.status(200).json(addonInterface.manifest);
+            }
             return;
         }
         
         // Обработка stream запросов
         if (path.includes('/stream/')) {
-            const match = path.match(/\/stream\/([^\/]+)\/([^\/]+)\.json/);
+            // Паттерны:
+            // /stream/movie/tt123.json
+            // /YOUR_API_KEY/stream/movie/tt123.json
+            // /eyJyZEFwaUtleSI6Li4ufQ==/stream/movie/tt123.json
             
-            if (!match) {
+            const streamMatch = path.match(/\/stream\/([^\/]+)\/([^\/]+)\.json/);
+            
+            if (!streamMatch) {
                 res.status(400).json({ error: 'Invalid stream URL' });
                 return;
             }
             
-            const type = match[1];
-            const id = match[2];
+            const type = streamMatch[1];
+            const id = streamMatch[2];
             
-            // Извлечение конфигурации из URL или query параметров
-            let config = {};
-            const urlParts = path.split('/');
-            const configIndex = urlParts.findIndex(p => p.length > 30 && !p.includes('.'));
+            console.log(`Stream request: ${type} - ${id}`);
+            console.log('Config:', userConfig);
             
-            if (configIndex > 0) {
-                try {
-                    const configStr = decodeURIComponent(urlParts[configIndex]);
-                    config = JSON.parse(Buffer.from(configStr, 'base64').toString());
-                } catch (e) {
-                    // Если не base64, пробуем как прямой API ключ
-                    config = { rdApiKey: urlParts[configIndex] };
-                }
-            }
-            
-            const result = await addonInterface.stream.handler({ type, id, config });
+            const result = await addonInterface.stream.handler({ 
+                type, 
+                id, 
+                config: userConfig 
+            });
             
             res.setHeader('Content-Type', 'application/json');
             res.status(200).json(result);
@@ -249,13 +348,15 @@ module.exports = async (req, res) => {
                 <style>
                     body {
                         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                        max-width: 800px;
+                        max-width: 900px;
                         margin: 50px auto;
                         padding: 20px;
                         background: #0f0f0f;
                         color: #e0e0e0;
+                        line-height: 1.6;
                     }
                     h1 { color: #7b5bf5; }
+                    h2 { color: #9575cd; margin-top: 30px; }
                     .card {
                         background: #1a1a1a;
                         padding: 20px;
@@ -265,9 +366,20 @@ module.exports = async (req, res) => {
                     }
                     code {
                         background: #2a2a2a;
-                        padding: 2px 6px;
+                        padding: 4px 8px;
                         border-radius: 4px;
                         color: #7b5bf5;
+                        font-size: 0.9em;
+                        word-break: break-all;
+                    }
+                    .url-box {
+                        background: #2a2a2a;
+                        padding: 15px;
+                        border-radius: 6px;
+                        margin: 15px 0;
+                        border-left: 4px solid #7b5bf5;
+                        font-family: monospace;
+                        word-break: break-all;
                     }
                     .install-btn {
                         display: inline-block;
@@ -277,23 +389,72 @@ module.exports = async (req, res) => {
                         text-decoration: none;
                         border-radius: 6px;
                         font-weight: bold;
-                        margin: 10px 0;
+                        margin: 10px 5px;
                     }
                     .install-btn:hover {
                         background: #6a4de0;
                     }
+                    .copy-btn {
+                        background: #4caf50;
+                        color: white;
+                        border: none;
+                        padding: 8px 16px;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        margin-left: 10px;
+                        font-size: 0.9em;
+                    }
+                    .copy-btn:hover {
+                        background: #45a049;
+                    }
                     ul { line-height: 1.8; }
+                    ol { line-height: 1.8; }
                     .warning {
                         background: #2a1a00;
                         border-left: 4px solid #ff9800;
                         padding: 15px;
                         margin: 20px 0;
                     }
+                    .success {
+                        background: #1a2a1a;
+                        border-left: 4px solid #4caf50;
+                        padding: 15px;
+                        margin: 20px 0;
+                    }
+                    .method {
+                        background: #1e1e2e;
+                        padding: 15px;
+                        margin: 15px 0;
+                        border-radius: 6px;
+                        border: 1px solid #333;
+                    }
+                    .method-title {
+                        font-weight: bold;
+                        color: #7b5bf5;
+                        font-size: 1.1em;
+                        margin-bottom: 10px;
+                    }
+                    input[type="text"] {
+                        width: 100%;
+                        padding: 12px;
+                        background: #2a2a2a;
+                        border: 1px solid #444;
+                        border-radius: 4px;
+                        color: #e0e0e0;
+                        font-family: monospace;
+                        margin: 10px 0;
+                        box-sizing: border-box;
+                    }
                 </style>
             </head>
             <body>
                 <h1>🎬 Real-Debrid Russian Torrents</h1>
                 <p>Стриминг торрентов через Real-Debrid с поиском по русским трекерам</p>
+                
+                <div class="success">
+                    <strong>✅ Аддон запущен и работает!</strong><br>
+                    Выберите способ установки ниже.
+                </div>
                 
                 <div class="card">
                     <h2>✨ Возможности</h2>
@@ -307,26 +468,39 @@ module.exports = async (req, res) => {
                 </div>
                 
                 <div class="warning">
-                    <strong>⚠️ Требуется:</strong> Real-Debrid API ключ для работы аддона.<br>
-                    Получите его на <a href="https://real-debrid.com/apitoken" target="_blank" style="color: #7b5bf5;">real-debrid.com/apitoken</a>
+                    <strong>⚠️ Требуется Real-Debrid подписка</strong><br>
+                    Получите API ключ на <a href="https://real-debrid.com/apitoken" target="_blank" style="color: #7b5bf5;">real-debrid.com/apitoken</a>
                 </div>
                 
                 <div class="card">
-                    <h2>📥 Установка</h2>
-                    <p><strong>Вариант 1:</strong> С API ключом в URL</p>
-                    <code>${req.headers.host}/YOUR_RD_API_KEY/manifest.json</code>
-                    <br><br>
-                    <p><strong>Вариант 2:</strong> Через настройки (рекомендуется)</p>
-                    <ol>
-                        <li>Скопируйте URL: <code>https://${req.headers.host}/manifest.json</code></li>
-                        <li>В Stremio: Addons → Community Addons</li>
-                        <li>Вставьте URL и установите</li>
-                        <li>В настройках аддона введите ваш Real-Debrid API ключ</li>
-                    </ol>
+                    <h2>📥 Установка в Stremio</h2>
                     
-                    <a href="stremio://localhost:11470/settings" class="install-btn">
-                        Открыть настройки Stremio
-                    </a>
+                    <div class="method">
+                        <div class="method-title">🚀 Способ 1: Быстрая установка (с API ключом в URL)</div>
+                        <p>Вставьте ваш Real-Debrid API ключ:</p>
+                        <input type="text" id="apiKeyInput" placeholder="Вставьте ваш Real-Debrid API ключ здесь">
+                        <div id="generatedUrl" style="display:none; margin-top: 15px;">
+                            <p><strong>Ваш персональный URL аддона:</strong></p>
+                            <div class="url-box" id="finalUrl"></div>
+                            <button class="copy-btn" onclick="copyUrl()">📋 Скопировать</button>
+                            <a id="installLink" class="install-btn" href="#">Установить в Stremio</a>
+                        </div>
+                    </div>
+                    
+                    <div class="method">
+                        <div class="method-title">⚙️ Способ 2: Через настройки (если Способ 1 не работает)</div>
+                        <ol>
+                            <li>Скопируйте этот URL:
+                                <div class="url-box">https://${req.headers.host}/manifest.json</div>
+                                <button class="copy-btn" onclick="copyToClipboard('https://${req.headers.host}/manifest.json')">📋 Скопировать</button>
+                            </li>
+                            <li>В Stremio: <strong>Addons</strong> → <strong>Community Addons</strong></li>
+                            <li>Вставьте скопированный URL</li>
+                            <li>Нажмите "Install"</li>
+                            <li>После установки откройте настройки аддона</li>
+                            <li>Введите ваш Real-Debrid API ключ в поле "Real-Debrid API ключ"</li>
+                        </ol>
+                    </div>
                 </div>
                 
                 <div class="card">
@@ -336,20 +510,68 @@ module.exports = async (req, res) => {
                         <li><code>JACKETT_URL</code> - URL вашего Jackett сервера</li>
                         <li><code>JACKETT_API_KEY</code> - API ключ Jackett</li>
                     </ul>
+                    <p><strong>Текущий статус:</strong> ${process.env.JACKETT_URL ? '✅ Jackett настроен' : '❌ Jackett не настроен (работает с прямым парсингом)'}</p>
                 </div>
                 
                 <div class="card">
                     <h2>ℹ️ Информация</h2>
                     <p>
                         <strong>Версия:</strong> ${manifest.version}<br>
-                        <strong>Статус:</strong> <span style="color: #4caf50;">Онлайн</span><br>
-                        <strong>Jackett:</strong> ${process.env.JACKETT_URL ? '✅ Настроен' : '❌ Не настроен'}
+                        <strong>Статус:</strong> <span style="color: #4caf50;">● Онлайн</span><br>
+                        <strong>Jackett:</strong> ${process.env.JACKETT_URL ? '✅ Настроен' : '❌ Не настроен (опционально)'}
                     </p>
                 </div>
                 
                 <p style="text-align: center; color: #666; margin-top: 50px;">
-                    Developed with ❤️ for Russian Stremio users
+                    Made with ❤️ for Russian Stremio users
                 </p>
+                
+                <script>
+                    const apiKeyInput = document.getElementById('apiKeyInput');
+                    const generatedUrl = document.getElementById('generatedUrl');
+                    const finalUrl = document.getElementById('finalUrl');
+                    const installLink = document.getElementById('installLink');
+                    
+                    apiKeyInput.addEventListener('input', function() {
+                        const apiKey = this.value.trim();
+                        if (apiKey.length > 10) {
+                            const url = 'https://${req.headers.host}/' + apiKey + '/manifest.json';
+                            finalUrl.textContent = url;
+                            installLink.href = url;
+                            generatedUrl.style.display = 'block';
+                        } else {
+                            generatedUrl.style.display = 'none';
+                        }
+                    });
+                    
+                    function copyUrl() {
+                        const url = finalUrl.textContent;
+                        copyToClipboard(url);
+                    }
+                    
+                    function copyToClipboard(text) {
+                        if (navigator.clipboard) {
+                            navigator.clipboard.writeText(text).then(() => {
+                                alert('✅ URL скопирован в буфер обмена!');
+                            });
+                        } else {
+                            // Fallback для старых браузеров
+                            const textArea = document.createElement('textarea');
+                            textArea.value = text;
+                            textArea.style.position = 'fixed';
+                            textArea.style.left = '-999999px';
+                            document.body.appendChild(textArea);
+                            textArea.select();
+                            try {
+                                document.execCommand('copy');
+                                alert('✅ URL скопирован в буфер обмена!');
+                            } catch (err) {
+                                alert('❌ Не удалось скопировать. Скопируйте вручную.');
+                            }
+                            document.body.removeChild(textArea);
+                        }
+                    }
+                </script>
             </body>
             </html>
         `);
